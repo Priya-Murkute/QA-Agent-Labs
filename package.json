@@ -1,0 +1,23 @@
+{
+  "name": "qa-agent-lab",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "agent:requirement": "tsx src/run-requirement-agent.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.1",
+    "openai": "^6.49.0",
+    "zod": "^4.6.5"
+  }
+}
