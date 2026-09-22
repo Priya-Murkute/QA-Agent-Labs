@@ -17,3 +17,4 @@ export const testPlanSchema = z.object({
 });
 
 export type TestPlan = z.infer<typeof testPlanSchema>;
+export type TestCase = z.infer<typeof testCaseSchema>;
