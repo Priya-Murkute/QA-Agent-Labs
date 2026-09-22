@@ -7,6 +7,42 @@ understand the reasoning, not just the outcome. Newest entries at the top.
 
 ---
 
+## A decision: not adopting Passmark (Bug0's open-source engine)
+
+While comparing this project against Bug0 (a commercial AI QA product), we
+found their actual open-source test engine, Passmark, on GitHub. It's
+genuinely well-built — Redis-based step caching with AI fallback when a
+cached action breaks, and "multi-model verification" where Claude and
+Gemini both run an assertion in parallel and a third model arbitrates if
+they disagree. Reading its README also settled a question we'd been
+curious about: Bug0 doesn't train their own model. Their own code requires
+API keys for Anthropic and Google directly, which confirms they're built
+on the same kind of third-party frontier models this project uses, just
+wired together at a much more mature, production level.
+
+We deliberately decided not to pull Passmark in as a dependency, even
+though it would solve some of the exact problems we're planning to build
+ourselves later (self-healing locators, multi-model failure analysis). The
+whole point of this project is understanding these mechanisms by building
+and breaking a smaller version ourselves — importing a finished
+implementation would solve the immediate problem while quietly undoing the
+reason we're doing this at all. There were also two practical reasons it
+wouldn't fit right now even if we wanted it: it requires two separate paid
+API keys (Anthropic and Google) for its core feature, which reintroduces
+the exact billing friction we've spent this whole project routing around
+with free tiers, and it's built around its own `runSteps()` natural-
+language API rather than the requirement-to-test-plan pipeline we've been
+building.
+
+The plan instead: treat Passmark's source as a reference to learn from
+once we get to building our own Locator Agent and Failure Analyzer
+(Phases 4 and 5) — read how a production system solves self-healing and
+multi-model consensus, then build a smaller version ourselves informed by
+it, the same way you'd read a well-written open-source project before
+writing your own version of something similar.
+
+---
+
 ## Fixing two agents that were quietly making things up
 
 **Branch:** `fix-requirement-hallucination`
