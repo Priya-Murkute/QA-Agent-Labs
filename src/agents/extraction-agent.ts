@@ -17,7 +17,14 @@ export async function extractRequirements(document: string) {
                     ']\n' +
                     'Each "description" must be self-contained, as if handed to a QA engineer on its own. ' +
                     'If the document only describes one feature, return an array with a single item. ' +
-                    'Do not invent features that are not supported by the document.',
+                    'Do not invent features that are not supported by the document.\n\n' +
+                    'IMPORTANT — only extract items the document states as a CONFIRMED, current requirement. ' +
+                    'Do NOT extract something the document itself flags as unresolved, undecided, or not yet ' +
+                    'built — this includes text under headings like "Risks," "Open Questions," "Out of Scope," ' +
+                    '"Non-goals," "Future," "Planned," or "TBD," and sentences containing phrases such as ' +
+                    '"there is no requirement yet," "not decided," "not addressed," "out of scope," ' +
+                    '"undefined," "flagged for a future decision," or similar. If a sentence describes the ' +
+                    'ABSENCE of a requirement or an unresolved question, do not turn it into a feature.',
             },
             { role: 'user', content: document }
         ]

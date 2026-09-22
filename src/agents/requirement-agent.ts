@@ -23,7 +23,15 @@ export async function generateTestIdeas(requirement: string) {
                     '    }\n' +
                     '  ]\n' +
                     '}\n' +
-                    'Include a mix of positive, negative and boundary cases.',
+                    'Include a mix of positive, negative and boundary cases.\n\n' +
+                    'IMPORTANT — do not invent specific technical constraints that are not stated or clearly ' +
+                    'implied by the requirement below (exact numeric limits, URL/field length limits, protocol ' +
+                    'or infrastructure behavior such as SSL/hosting/migration, rate limits, etc.). If the ' +
+                    'requirement does not specify a concrete number or mechanism for something, write the test ' +
+                    'case around the behavior that IS stated, or phrase it generically (e.g. "an unusually long ' +
+                    'value" rather than a specific invented character count). Every entry in "assumptions" must ' +
+                    'be something a reasonable QA engineer would infer from the requirement text itself — not a ' +
+                    'fabricated system limit.',
             },
             {
                 role: 'user',

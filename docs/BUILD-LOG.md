@@ -1,141 +1,216 @@
 # Build Log
 
-A running record of what was built, what broke, and why — kept alongside the
-code so the reasoning behind decisions isn't lost. Newest entries at the top.
+This is the story of how this project actually got built — not a polished
+changelog, but a record of what we tried, what broke, why it broke, and how
+we fixed it. The goal is that anyone (including future us) can read this and
+understand the reasoning, not just the outcome. Newest entries at the top.
 
 ---
 
-## Phase 2 — Test plan → Playwright spec generator
+## Fixing two agents that were quietly making things up
+
+**Branch:** `fix-requirement-hallucination`
+
+While testing the pipeline against a realistic PRD, we found a genuinely bad
+failure. The source document had a section called "Risks and Open
+Questions" that included this line: *"there is no requirement yet... to
+revoke a previously issued certificate."* That sentence is explicitly
+saying "we haven't decided this" — but our extraction agent didn't know the
+difference between "this is a confirmed requirement" and "this is a note
+about something unresolved." It pulled that sentence out as if it were a
+real feature to test.
+
+It got worse from there. The next agent in the pipeline — the one that
+turns a requirement into actual test cases — only ever sees the requirement
+in isolation, with none of the surrounding context. Handed this vague,
+made-up "feature" with nothing real behind it, it didn't say "I don't have
+enough information." It confidently invented details: a specific 2048-
+character URL length limit, behavior around expired SSL certificates,
+behavior during a server migration. None of that existed anywhere in the
+source document. It just sounded plausible enough to pass as real.
+
+That's the core danger with these agents: they don't fail loudly when
+they're missing information. They fail quietly, by making something up that
+reads exactly like a fact.
+
+**How we fixed it**, in two places, because either agent could make this
+mistake independently of the other:
+
+- The **extraction agent** now gets explicit instructions to recognize the
+  difference between "this document describes a real requirement" and
+  "this document is telling you something is undecided, out of scope, or a
+  risk." We gave it concrete signal phrases to watch for, so it has
+  something specific to check against instead of a vague sense of
+  "does this sound testable."
+- The **test-plan agent** now gets an explicit rule: don't invent specific
+  numbers, protocols, or infrastructure behavior that isn't actually stated.
+  If the requirement doesn't say how long is "too long," write the test
+  around "an unusually long value" instead of inventing a number that
+  sounds authoritative but isn't real.
+
+**How we know it actually worked**, rather than just hoping the prompt
+change helped: we tested each fix on its own, against the exact scenario
+that broke before.
+
+First, we fed the extraction agent a tiny document with one real
+requirement (password reset) sitting right next to the exact "risks" text
+that tricked it last time. It came back with exactly one requirement —
+password reset — and correctly ignored the risk note entirely.
+
+Then, separately, we called the test-plan agent directly with the exact
+vague description that previously caused it to invent the URL length limit
+and SSL scenarios. This time, it stuck to what was actually knowable: does
+the link work, does an invalid link show an error, does an unusually long
+identifier still work, and — importantly — it correctly said that
+revocation is "not currently supported" instead of pretending a revoke
+feature existed.
+
+**What's still not fixed:** the pipeline can still extract the same real
+requirement twice under two different names (we saw this happen once, and
+our current duplicate-detection only catches exact name matches, not
+things that are worded differently but mean the same thing). And there's
+still no proper evaluation dataset — right now we catch problems by
+manually reading output and noticing something looks wrong, which doesn't
+scale and won't catch a regression automatically next time we change a
+prompt. That's the argument for building a real evaluation set before
+adding much more.
+
+---
+
+## Phase 2 — Turning a test plan into an actual Playwright file
 
 **Branch:** `phase-2-playwright-generator`
 
-Added a deterministic (non-LLM) generator that turns a schema-valid
-`TestPlan` JSON into a `.spec.ts` file:
+Up to this point, everything we built produced JSON — a structured list of
+test cases, but nothing that could actually run in a browser. Phase 2 closes
+that gap: it takes a validated test plan and turns it into a real
+`.spec.ts` file.
 
-- `src/generators/playwright-generator.ts` — builds one `test.fixme(...)`
-  block per test case (title, preconditions/steps as comments, expected
-  result as a TODO). Deliberately not LLM-generated code — same "controlled
-  boundary" principle as the rest of the pipeline: validated data in,
-  reviewable code out.
-- `src/run-generate-tests.ts` — CLI entry point (`npm run agent:generate --
-  <path>`), accepts either a single test-plan JSON file or a directory of
-  them.
-- Every generated test uses `test.fixme()`, not a bare `test()`. An
-  unimplemented skeleton with no real assertions would otherwise report as a
-  false "pass" — `fixme` reports it as pending instead, which is the honest
-  signal.
+We deliberately didn't ask the AI to write the Playwright code itself. The
+generator is plain, boring TypeScript that turns each test case into a
+`test.fixme(...)` block — the title, the preconditions and steps written as
+comments, and two clear TODOs where a real Playwright action and assertion
+need to go. This keeps the same boundary we've used everywhere else in this
+project: the AI proposes, validated data flows through, and a human reviews
+before anything executes for real. We didn't want an agent silently writing
+arbitrary browser-automation code with no one looking at it first.
 
-**Bugs found while testing this against real output:**
+We used `test.fixme()` instead of a plain `test()` on purpose. An empty
+skeleton with no real assertions would technically "pass" if left as a
+normal test — which is a lie. `fixme` reports it as "not implemented yet"
+in Playwright's output, which is the honest thing to say.
 
-1. `escape()` (meant for values placed inside a single-quoted JS string
-   literal, e.g. the test title) was also being applied to `expectedResults`
-   inside a `//` comment. Comments don't need quote-escaping, so this
-   produced literal `\'` characters visible in the generated file. Fixed by
-   splitting into `escapeForStringLiteral()` (title only) and `toComment()`
-   (everything placed in a `//` line, which also flattens embedded newlines
-   so a multi-line field can't break out of the comment).
-2. **`playwright.config.ts` had `testDir: './.tests'`** (a hidden dot-folder)
-   instead of `'./tests'` — a pre-existing misconfiguration from the initial
-   scaffold, not something introduced by this phase. This meant `npx
-   playwright test` had only ever been running the default
-   `.tests/example.spec.ts` boilerplate; the real `tests/smoke.spec.ts` from
-   Phase 0, and now `tests/generated/`, were silently never discovered.
-   Fixed by correcting `testDir` to `'./tests'`. Verified: `smoke.spec.ts`
-   now runs and passes, and generated `test.fixme()` cases correctly show as
-   *skipped* rather than invisible.
+**Two real bugs turned up while checking this actually worked, not just
+that it looked right on screen:**
 
----
+The first was small — a text-escaping function meant for a JavaScript
+string literal was also being applied to a plain code comment, so comments
+ended up with ugly literal backslashes in them (`\'Invalid email or
+password.\'` instead of a clean quote). Comments don't need that kind of
+escaping at all, so we split the escaping logic into two purposes and fixed
+it.
 
-## Phase 1 extension — Two-stage requirement extraction pipeline
-
-**Branch:** `two-stage-requirements-pipeline` (PR open against `main`)
-
-Generalized Phase 1 from "read one hardcoded requirement file" to "map an
-arbitrary document into distinct requirements, then generate a test plan for
-each one":
-
-- `src/schemas/requirements-list.ts` — contract for Stage 1's output.
-- `src/agents/extraction-agent.ts` — maps a raw document (user story, case
-  study, PRD, informal notes) into `{ feature, description }[]`.
-- `src/run-pipeline.ts` — orchestrates both stages, writes
-  `artifacts/requirements.json` and one `artifacts/test-plans/<slug>.json`
-  per requirement.
-
-**Bugs found and fixed, in the order they were hit:**
-
-1. **Output truncation on a large document.** Feeding a full ~400-line PRD
-   in one call caused the model's JSON response to get cut off mid-array
-   before it closed — `JSON.parse` failed. Root cause: no `max_output_tokens`
-   set, and even after setting one, the real constraint turned out to be
-   Groq's free-tier **rate limit**: 8,000 tokens per minute, input + output
-   combined. A single large document can exceed that before generation even
-   starts.
-2. **Fix: document chunking** (`src/utils/chunk.ts`). Estimates token count
-   (char/4 heuristic — deliberately approximate, since the account routes
-   through Groq's open models via OmniRoute, not a model with a canonical
-   tokenizer), splits on markdown headings when present, falls back to
-   paragraph splitting, and hard-splits a single oversized paragraph as a
-   last resort. Unit-tested against 4 scenarios (headings, no headings,
-   oversized single paragraph, small doc needing no split) before wiring it
-   into the real pipeline.
-3. **Fix: retry-with-backoff** (`src/utils/retry.ts`). Retries only on `429`
-   (genuinely transient) with exponential backoff — deliberately does *not*
-   retry `413` (request too large), since no amount of waiting fixes an
-   oversized request; that needs chunking, not retrying.
-4. **Fix: bounded concurrency** (`src/utils/concurrency.ts`). Stage 2's
-   per-requirement calls are independent, so they run through a small
-   worker pool instead of one at a time. Important finding from testing
-   this: on a free-tier account, the real limit (tokens per minute *and*
-   tokens per day) is a shared account-wide budget — concurrency reduces
-   wall-clock latency stacking, but does **not** increase total throughput,
-   and pushing concurrency too high just produces more `429`s that
-   backoff then has to absorb.
-5. **Hit Groq's daily quota (200,000 tokens/day), not just per-minute**,
-   partway through a concurrency test — confirmed via the API's own error
-   message. Not a bug in our code; a hard external constraint. Retry logic
-   correctly gave up after 3 attempts rather than hanging, and all
-   already-completed output was preserved on disk.
-
-**Quality issues found (not bugs — these are the actual limits of the
-approach, not something a chunking or retry fix addresses):**
-
-- Tested against a real, well-structured client PRD (itemized IDs,
-  priorities) as well as a synthetic messy case study. Extraction quality
-  was noticeably better on the structured document.
-- **Hallucination, confirmed twice.** In one case the model invented an
-  unstated "maximum 1000 users" constraint and built boundary tests around
-  it. In a worse case, a source document's explicit *open question* ("there
-  is no requirement yet to revoke a certificate") was misclassified as a
-  confirmed requirement, and the test-plan generator then fabricated a
-  cascade of fully invented specifics (URL length limits, SSL behavior,
-  server migration behavior) with zero grounding in the source.
-- **Semantic duplicates slip through.** The same underlying requirement
-  was extracted twice under different wording in one run; de-duplication
-  is currently exact-string-match on the feature name, so it doesn't catch
-  this.
-- None of the above is caught automatically today — a human still has to
-  read the `assumptions` field and the extracted requirement list. This is
-  the argument for building a real evaluation set (roadmap Phase 9) rather
-  than continuing to patch prompts reactively.
+The second was much bigger, and honestly a little concerning: the
+project's Playwright config was pointing at a hidden folder called
+`.tests` instead of the normal `tests` folder. That meant that ever since
+this project was first set up, running `npx playwright test` only ever ran
+Playwright's own default example test — our actual smoke test from Day 1,
+and anything we'd generate going forward, were completely invisible to the
+test runner. Nobody would have noticed just by watching tests report
+"passing," because the tests that mattered were never being run at all.
+We fixed the config, then proved it: our real smoke test now runs and
+passes, and the newly generated skeleton tests correctly show up as
+"skipped" instead of vanishing silently.
 
 ---
 
-## Phase 1 — Requirement → validated test plan (single file)
+## Making the pipeline handle real-world-sized documents
 
-**Branch:** `phase-1-requirement-agent` (merged to `main` via PR #1)
+**Branch:** `two-stage-requirements-pipeline` (the chunking/retry/concurrency work)
 
-- `src/schemas/test-plan.ts`, `src/ai/client.ts`,
-  `src/agents/requirement-agent.ts`, `src/run-requirement-agent.ts`.
-- AI backend: local **OmniRoute** gateway (`http://localhost:20128/v1`)
-  routing to **Groq** (`groq/openai/gpt-oss-120b`, free tier), after OpenAI
-  billing had no credits. `client.ts` needed both `apiKey` and `baseURL`
-  set — missing `baseURL` was the first bug (requests were silently going
-  to OpenAI's real API with a gateway key, producing a misleading 401).
-- Verified end-to-end: `requirements/login.md` → validated
-  `artifacts/test-plan.json`.
+Everything worked fine on small, hand-written examples. It broke the moment
+we pointed it at an actual full-length PRD.
 
-## Phase 0 — Environment
+The first failure looked like the model just... stopped mid-sentence. The
+JSON it returned wasn't closed properly, so parsing it failed. The real
+reason took some digging: the free AI tier we're using has a hard limit on
+how many tokens (roughly, words) it will process per minute, counting both
+what we send it and what it sends back. A long document alone can use up
+that whole budget before the model even finishes replying.
 
-Standard `npm init playwright@latest` scaffold (TypeScript, GitHub Actions).
-`.env` originally had `.gitignore` content accidentally pasted into it —
-fixed by separating the two files properly.
+The fix was to stop sending whole documents in one shot. We built a small
+utility that estimates how big a chunk of text is, and splits a document
+into pieces that each fit comfortably within budget — preferring to split
+along natural section headings so related content stays together, and
+falling back to splitting by paragraph if there are no headings at all. We
+didn't just trust that this worked — we wrote a handful of test scenarios
+for the splitting logic itself (a document with headings, one without,
+one giant unbroken block of text, and a document too small to need
+splitting at all) before ever wiring it into the real pipeline.
+
+Alongside that, we added a retry mechanism, but a deliberately narrow one.
+If the model says "you're sending requests too fast, slow down," that's
+worth waiting a couple of seconds and trying again. If the model says "this
+single request is just too big," waiting doesn't help — no amount of
+patience shrinks an oversized request. So retries only apply to the first
+kind of failure, not the second.
+
+We also tried running multiple requests at once instead of one after
+another, since each individual extracted requirement is independent of the
+others and doesn't need to wait its turn. This did help with the dead time
+of waiting on network latency, but it came with an important lesson: our
+free-tier account has a shared budget for the whole account, not per
+request. Running things in parallel doesn't give you more budget — it just
+spends the same budget faster, which mostly showed up as more "slow down"
+messages rather than genuinely finishing sooner.
+
+That lesson got proven the hard way, too: partway through a bigger test,
+we didn't just hit the per-minute limit — we ran out of the entire day's
+allowance (200,000 tokens/day on the free tier), something we hadn't even
+known existed until the error message told us. Nothing was lost — every
+requirement and test plan that had already finished stayed saved on disk —
+but it was a clear reminder that "add more concurrency" only gets you so
+far against a fixed budget you don't control.
+
+**What this version can do that the first version couldn't:** take any
+requirements document — not just one small, pre-written file — split it
+into distinct real requirements, and generate a validated test plan for
+each one. We proved this on a real client-style PRD (well-structured, with
+numbered requirements) and on a deliberately messy, prose-heavy synthetic
+document, and it handled both.
+
+---
+
+## Phase 1 — The first real agent: turning a requirement into a validated test plan
+
+**Branch:** `phase-1-requirement-agent`
+
+This is the smallest possible version of the whole idea: read one
+requirement, ask an AI to propose test cases, and — critically — never
+trust what comes back until it's checked. We used a schema (a strict
+description of exactly what shape the data must be) to validate the
+model's output before saving anything to disk. If the model returns
+something that doesn't match, the run fails loudly instead of silently
+saving garbage.
+
+Getting the AI connection itself working took a few real detours. We
+started by trying OpenAI directly, but the account had no billing credit,
+so we routed through a local gateway tool called OmniRoute instead, which
+lets you point at many different AI providers through one connection. We
+ended up using Groq's free tier through that gateway. The very first
+attempt to use it still failed — the client code had the right access key,
+but was still pointed at OpenAI's real servers instead of the gateway, so
+naturally it got rejected. Once that was fixed, the whole chain worked:
+a plain-English login requirement went in, and a validated, schema-correct
+test plan came out the other side.
+
+---
+
+## Phase 0 — Getting a normal Playwright project running, before any AI was involved
+
+Standard project setup: Node, TypeScript, Playwright, GitHub Actions. One
+small early mistake worth recording: the `.env` file (which should only
+ever hold secret values like API keys) accidentally had the contents of
+`.gitignore` pasted into it as well. Easy to miss, easy to fix — just a
+reminder to actually look at a file's contents rather than assume it's
+right because it was created by a wizard.
