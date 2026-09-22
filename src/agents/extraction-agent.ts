@@ -3,6 +3,7 @@ import { ai, model } from '../ai/client.js';
 export async function extractRequirements(document: string) {
     const response = await ai.responses.create({
         model: model,
+        max_output_tokens: 5000,
         input: [
             {
                 role: 'system',
