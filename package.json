@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "agent:requirement": "tsx src/run-requirement-agent.ts",
-    "agent:pipeline": "tsx src/run-pipeline.ts"
+    "agent:pipeline": "tsx src/run-pipeline.ts",
+    "agent:generate": "tsx src/run-generate-tests.ts"
   },
   "keywords": [],
   "author": "",
