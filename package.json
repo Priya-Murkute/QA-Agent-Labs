@@ -4,7 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "agent:requirement": "tsx src/run-requirement-agent.ts"
+    "agent:requirement": "tsx src/run-requirement-agent.ts",
+    "agent:pipeline": "tsx src/run-pipeline.ts"
   },
   "keywords": [],
   "author": "",
